@@ -61,7 +61,7 @@ class Notification_Transport_Email extends Notification_Transport {
 	public function send($args = array(), $when = null)
 	{
 		$smtp_config = Arr::path($args, 'email.smtp', 'default');
-		$smtp_config = Kohana::config('notification.smtp.' . $smtp_config);
+		$smtp_config = Kohana::$config->load('notification.smtp.' . $smtp_config);
 
 		$transport_smtp = new Zend_Mail_Transport_Smtp($smtp_config['host'], $smtp_config);
 
