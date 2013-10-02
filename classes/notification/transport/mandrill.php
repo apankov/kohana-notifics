@@ -1,6 +1,6 @@
 <?php
 
-class Notification_Transport_Email extends Notification_Transport {
+class Notification_Transport_Mandrill extends Notification_Transport {
 
 	public function send_async($args = array(), $when = null)
 	{
@@ -16,7 +16,7 @@ class Notification_Transport_Email extends Notification_Transport {
 	}
 
 	/**
-	 * Send email.
+	 * Send email using Mandrill API.
 	 *
 	 * Example of arguments array:
 	 *
@@ -38,9 +38,7 @@ class Notification_Transport_Email extends Notification_Transport {
 	 *       'bcc' => array(), // optional
 	 *     ),
 	 *     'email' => array( // email specific options
-	 *       'smtp' => 'default', // name of smtp config
 	 *       'reply-to' => array(), // optional
-	 *       'return-path' => '', // optional
 	 *       'signature' => '', // optional, used in template
 	 *       'attachments' => array( // optional
 	 *         array(
@@ -60,111 +58,109 @@ class Notification_Transport_Email extends Notification_Transport {
 	 */
 	public function send($args = array(), $when = null)
 	{
-		$smtp_config = Arr::path($args, 'email.smtp', 'default');
-		$smtp_config = Kohana::$config->load('notification.smtp.' . $smtp_config);
+		$config = Kohana::$config->load('mandrill');
 
-		$transport_smtp = new Zend_Mail_Transport_Smtp($smtp_config['host'], $smtp_config);
-
-		$mail = new Zend_Mail('utf-8');
-
-		if ($return_path = Arr::path($args, 'email.return-path'))
-		{
-			$mail->setReturnPath($return_path);
-		}
-		else
-		{
-			$mail->setReturnPath(Arr::get($smtp_config, 'return-path', ''));
-		}
+		$message = $config['default_message'];
 
 		$from = Arr::get($args, 'from', array());
-		if (empty($from))
-		{
-			$from = Arr::get($smtp_config, 'from', array());
-		}
 		foreach ($from as $email => $name)
 		{
-			$mail->setFrom($email, $name);
+			$message['from_name'] = $name;
+			$message['from_email'] = $email;
 		}
 
 		$reply_to = Arr::path($args, 'email.reply-to', array());
 		foreach ($reply_to as $email => $name)
 		{
-			$mail->setReplyTo($email, $name);
+			$message['headers']['Reply-To'] = $email ? $email : $name;
 		}
 
 		$recipients_to = Arr::path($args, 'recipients.to', array());
 		foreach ($recipients_to as $email => $name)
 		{
-			$mail->addTo($email, $name);
+			$message['to'][] = array(
+				'email' => $email,
+				'name' => $name,
+			);
 		}
 
 		$recipients_cc = Arr::path($args, 'recipients.cc', array());
 		foreach ($recipients_cc as $email => $name)
 		{
-			$mail->addCc($email, $name);
+			$message['to'][] = array(
+				'email' => $email,
+				'name' => $name,
+			);
 		}
 
 		$recipients_bcc = Arr::path($args, 'recipients.bcc', array());
 		foreach ($recipients_bcc as $email => $name)
 		{
-			$mail->addBcc($email, $name);
+			$message['bcc_address'] = $email;
 		}
 
-		$mail->setSubject(Arr::get($args, 'subject'));
+		$message['subject'] = Arr::get($args, 'subject');
 
-		foreach (array('html' => 'setBodyHtml', 'text' => 'setBody') as $format => $method)
+		foreach (array('html', 'text') as $format)
 		{
 			if ($body_content = Arr::path($args, 'body-content.' . $format))
 			{
-				call_user_func(array($mail, $method), $body_content);
+				$message[$format] = $body_content;
 			}
 			else if ($body_tmpl = Arr::path($args, 'body.' . $format))
 			{
 				$view = new View($body_tmpl, $args['body_args']);
-				call_user_func(array($mail, $method), $view->render());
+				$message[$format] = $view->render();
 			}
 		}
+
+		$message['metadata'] = Arr::get($args, 'metadata', array());
 
 		$attachments = Arr::path($args, 'email.attachments', array());
 		foreach ($attachments as $attachment)
 		{
-			if ($filename = Arr::get($attachment, 'src_filename'))
+			$content = '';
+			if ($content = Arr::get($attachment, 'content'))
 			{
-				$attach = $mail->createAttachment(file_get_contents($filename));
 			}
-			else if ($content = Arr::get($attachment, 'content'))
+			else if ($filename = Arr::get($attachment, 'src_filename'))
 			{
-				$attach = $mail->createAttachment($content);
+				$content = file_get_contents($filename);
 			}
 			else
 			{
 				continue;
 			}
-			$attach->type = $attachment['type'];
-			$attach->filename = $attachment['filename'];
+
+			$message['attachments'][] = array(
+				'type' => $attachment['type'],
+				'name' => $attachment['filename'],
+				'content' => $content,
+			);
 		}
+
+		$request = array(
+			'type' => 'messages',
+			'call' => 'send',
+			'key' => $config['api_key'],
+			'message' => $message,
+		);
 
 		try
 		{
-			$mail->send($transport_smtp);
+			$ret = Mandrill::call($request);
+
+			Log::instance()->add(Log::DEBUG, "Mandrill API result: " . $ret);
+			return $ret;
 		}
 		catch (Exception $e)
 		{
 			$token = uniqid();
-			Kohana::$log->add(Kohana::DEBUG, "Token: $token, \n" . var_export($mail, 1));
-
-			// do not want full stacktrace
-			$exc = array(
-				'string' => $e->__toString(),
-				'message' => $e->getMessage(),
-				'code' => $e->getCode(),
-				'file' => $e->getFile(),
-				'line' => $e->getLine(),
-				'trace' => $e->getTraceAsString(),
-			);
-			Kohana::$log->add(Kohana::ERROR, $token . ':' . var_export($exc, 1));
+			Log::instance()->add(Log::DEBUG, "Token: $token, \n" . var_export($request, 1));
+			Log::instance()->add(Log::DEBUG, $token . ':' . var_export($e, 1));
 
 			throw new Notification_Exception('Failed to send email notification, token ' . $token);
 		}
+		return null;
 	}
 }

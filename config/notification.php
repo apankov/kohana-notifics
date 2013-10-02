@@ -2,6 +2,9 @@
 
 return array(
 	'send_email' => true,
+	'send_async' => true,
+	'queue_name' => 'notifications_queue',
+	'transport'  => 'email',
 
 	'smtp' => array(
 		'default' => array(
